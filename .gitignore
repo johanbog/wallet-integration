@@ -1,3 +1,5 @@
+*.txt
+*.csv
 .env
 .vscode
 access_token.json

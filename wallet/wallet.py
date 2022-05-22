@@ -8,6 +8,7 @@ import patito as pt
 import polars as pl
 import requests
 from dotenv import load_dotenv
+import pandas as pd
 
 load_dotenv()
 
@@ -19,6 +20,30 @@ headers = {
 }
 
 IGNORE_ACCOUNTS = "Bogen-fond"
+ACCOUNTS = {
+    "Johannes": {
+        "mail": os.environ.get("MAIL_JOHANNES"),
+        "accounts": [
+            "Johannes",
+            "Johannes Credit Card",
+        ],
+    },
+    "Family": {
+        "mail": os.environ.get("MAIL_FAMILY"),
+        "accounts": [
+            "Family Shared Expenses",
+            "Household Income",
+            "BOLIGSPARING FOR UNGDOM",
+            "SPAREKONTO",
+        ],
+    },
+    "Minji": {
+        "mail": os.environ.get("MAIL_MINJI"),
+        "accounts": [
+            "Minji Song",
+        ],
+    },
+}
 
 
 class Account(pt.Model):
@@ -30,15 +55,19 @@ class Account(pt.Model):
         if accountNumber == "K1955118490":
             accountNumber = 42024603940
             data["name"] = "Johannes Credit Card"
+            print(data)
         super().__init__(number=accountNumber, **data)
 
 
 class Transaction(pt.Model):
-    accountName: str
+    name: str
     description: Optional[str]
-    amount: float
+    amount: float = pt.Field(dtype=pl.Float32)
     remoteAccountNumber: Optional[int]
-    date: Optional[datetime]
+    date: datetime = pt.Field(dtype=pl.Date)
+
+    class Config:
+        frozen = True
 
     def __init__(
         self,
@@ -54,9 +83,6 @@ class Transaction(pt.Model):
             )
         super().__init__(date=parsed_date, description=description, **data)
 
-    class Config:
-        frozen = True
-
     @property
     @lru_cache()
     def remote_account(self) -> Optional[Account]:
@@ -66,8 +92,7 @@ class Transaction(pt.Model):
 
 
 class Wallet:
-    def __init__(self) -> None:
-        pass
+    test = False
 
     @classmethod
     def url(cls, t: Literal["accounts", "transactions"], **kwargs) -> str:
@@ -89,14 +114,33 @@ class Wallet:
         for account in cls.accounts():
             if account.number == number:
                 return account
-        return
+
+    @classmethod
+    def account_from_name(cls, name: str) -> Optional[Account]:
+        for account in cls.accounts():
+            if account.name == name:
+                return account
 
     @classmethod
     @lru_cache
-    def transactions(cls, account: Account, **kwargs) -> pl.DataFrame:
+    def transactions(cls, account: Account, **kwargs) -> pt.DataFrame:
         url = cls.url("transactions", accountKey=account.key, **kwargs)
-        transactions_raw = cls.request(url)["transactions"]
-        return transactions_raw
+        transactions = pd.DataFrame(cls.request(url)["transactions"])
+
+        transactions = transactions.reindex(sorted(transactions.columns), axis=1)
+        df = Transaction.DataFrame(transactions)
+        if not df.is_empty():
+            df = (
+                df.with_column(
+                    (pl.col("date") // 1000)
+                    .apply(datetime.fromtimestamp)
+                    .apply(datetime.date)
+                )
+                .drop()
+                .cast()
+                .with_column(pl.lit(account.name).alias("name"))
+            )
+        return df
 
     @classmethod
     def request(cls, url: str) -> dict:
@@ -104,3 +148,44 @@ class Wallet:
         if response.ok:
             return json.loads(response.text)
         raise ValueError(url, response)
+
+    @classmethod
+    def send_email(cls, account_group: str, from_date: str) -> pl.DataFrame:
+        transactions = []
+        for account_name in ACCOUNTS[account_group]["accounts"]:
+            account = cls.account_from_name(account_name)
+            assert account is not None
+            df = cls.transactions(account, fromDate=from_date)
+            if not df.is_empty():
+                transactions.append(df)
+        df = clean_data(pl.concat(transactions))
+        return df
+
+
+def get_transfer_account(number: int) -> Optional[str]:
+    acct = Wallet.account_from_number(number)
+    if acct:
+        if acct.name in IGNORE_ACCOUNTS:
+            return f"Payment t/f {acct.name}"
+        return f"Transfer t/f {acct.name}"
+
+
+def clean_data(df: pl.DataFrame) -> pl.DataFrame:
+    if df.is_empty():
+        return df
+    return (
+        df.with_column(
+            pl.when(
+                pl.col("remoteAccountNumber").apply(get_transfer_account).is_not_null()
+            )
+            .then(pl.col("remoteAccountNumber").apply(get_transfer_account))
+            .otherwise(pl.col("description"))
+            .alias("description"),
+        )
+    ).rename(
+        {
+            "remoteAccountNumber": "payee",
+            "description": "note",
+            "name": "tag",
+        }
+    )
