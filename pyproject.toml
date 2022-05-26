@@ -13,6 +13,7 @@ pandas = "^1.4.2"
 nb-black = "^1.0.7"
 python-dotenv = "^0.20.0"
 pyarrow = "^8.0.0"
+isort = "^5.10.1"
 
 [tool.poetry.dev-dependencies]
 flake8 = "^4.0.1"

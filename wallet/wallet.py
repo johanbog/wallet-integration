@@ -1,49 +1,15 @@
 import json
-import os
 from datetime import datetime
 from functools import lru_cache
 from typing import Any, Literal, Optional, Union
 
+import pandas as pd
 import patito as pt
 import polars as pl
 import requests
-from dotenv import load_dotenv
-import pandas as pd
 
-load_dotenv()
-
-access_token = os.environ.get("ACCESS_TOKEN")
-URL_BASE = "https://api.sparebank1.no/personal/banking"
-headers = {
-    "accept": "application/vnd.sparebank1.v1+json;charset=utf-8",
-    "Authorization": f"Bearer {access_token}",
-}
-
-IGNORE_ACCOUNTS = "Bogen-fond"
-ACCOUNTS = {
-    "Johannes": {
-        "mail": os.environ.get("MAIL_JOHANNES"),
-        "accounts": [
-            "Johannes",
-            "Johannes Credit Card",
-        ],
-    },
-    "Family": {
-        "mail": os.environ.get("MAIL_FAMILY"),
-        "accounts": [
-            "Family Shared Expenses",
-            "Household Income",
-            "BOLIGSPARING FOR UNGDOM",
-            "SPAREKONTO",
-        ],
-    },
-    "Minji": {
-        "mail": os.environ.get("MAIL_MINJI"),
-        "accounts": [
-            "Minji Song",
-        ],
-    },
-}
+from wallet import mail
+from wallet.config import ACCOUNTS, HEADERS, IGNORE_ACCOUNTS, URL_BASE
 
 
 class Account(pt.Model):
@@ -98,7 +64,9 @@ class Wallet:
     def url(cls, t: Literal["accounts", "transactions"], **kwargs) -> str:
         _url = f"{URL_BASE}/{t}"
         if kwargs:
-            _url += "?" + "&".join([f"{key}={value}" for key, value in kwargs.items()])
+            _url += "?" + "&".join(
+                [f"{key}={value}" for key, value in kwargs.items() if value is not None]
+            )
         return _url
 
     @classmethod
@@ -144,21 +112,24 @@ class Wallet:
 
     @classmethod
     def request(cls, url: str) -> dict:
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=HEADERS)
         if response.ok:
             return json.loads(response.text)
         raise ValueError(url, response)
 
     @classmethod
-    def send_email(cls, account_group: str, from_date: str) -> pl.DataFrame:
+    def send_email(
+        cls, account_group: str, from_date: str, to_date: Optional[str] = None
+    ) -> pl.DataFrame:
         transactions = []
         for account_name in ACCOUNTS[account_group]["accounts"]:
             account = cls.account_from_name(account_name)
             assert account is not None
-            df = cls.transactions(account, fromDate=from_date)
+            df = cls.transactions(account, fromDate=from_date, toDate=to_date)
             if not df.is_empty():
                 transactions.append(df)
         df = clean_data(pl.concat(transactions))
+        mail.send(df, account_group)
         return df
 
 
@@ -170,22 +141,25 @@ def get_transfer_account(number: int) -> Optional[str]:
         return f"Transfer t/f {acct.name}"
 
 
+def map_category(note: str) -> Optional[str]:
+    if note.startswith("Transfer t/f"):
+        return "Transfer"
+
+
 def clean_data(df: pl.DataFrame) -> pl.DataFrame:
     if df.is_empty():
         return df
     return (
         df.with_column(
-            pl.when(
-                pl.col("remoteAccountNumber").apply(get_transfer_account).is_not_null()
-            )
-            .then(pl.col("remoteAccountNumber").apply(get_transfer_account))
-            .otherwise(pl.col("description"))
-            .alias("description"),
-        )
-    ).rename(
-        {
-            "remoteAccountNumber": "payee",
-            "description": "note",
-            "name": "tag",
-        }
-    )
+            (
+                pl.when(
+                    pl.col("remoteAccountNumber")
+                    .apply(get_transfer_account)
+                    .is_not_null()
+                )
+                .then(pl.col("remoteAccountNumber").apply(get_transfer_account))
+                .otherwise(pl.col("description"))
+                + (" (" + pl.col("name") + ")")
+            ).alias("note"),
+        ).with_column(pl.col("note").apply(map_category).alias("category"))
+    ).rename({"remoteAccountNumber": "payee"})
