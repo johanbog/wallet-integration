@@ -9,14 +9,17 @@ python = "^3.10"
 polars = "^0.13.37"
 patito = "^0.1.2"
 jupyterlab = "^3.4.2"
-pandas = "^1.4.2"
-nb-black = "^1.0.7"
 python-dotenv = "^0.20.0"
-pyarrow = "^8.0.0"
-isort = "^5.10.1"
+pandas = "^1.5.3"
 
 [tool.poetry.dev-dependencies]
 flake8 = "^4.0.1"
+
+[tool.poetry.group.dev.dependencies]
+mypy = "^1.0.0"
+black = "^23.1.0"
+types-requests = "^2.28.11.12"
+isort = "^5.12.0"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]

@@ -53,7 +53,7 @@ class Transaction(pt.Model):
     @lru_cache()
     def remote_account(self) -> Optional[Account]:
         if not self.remoteAccountNumber:
-            return
+            return None
         return Wallet.account_from_number(self.remoteAccountNumber)
 
 
@@ -71,23 +71,25 @@ class Wallet:
 
     @classmethod
     @lru_cache
-    def accounts(cls) -> tuple[Account]:
+    def accounts(cls) -> tuple[Account, ...]:
         accounts_raw = cls.request(cls.url("accounts", includeCreditCardAccounts=True))[
             "accounts"
         ]
         return tuple(Account(**acc) for acc in accounts_raw if acc["name"])
 
     @classmethod
-    def account_from_number(cls, number: Optional[int]) -> Optional[Account]:
+    def account_from_number(cls, number: Optional[int]) -> Account:
         for account in cls.accounts():
             if account.number == number:
                 return account
+        raise ValueError(f"No account with number {number}")
 
     @classmethod
-    def account_from_name(cls, name: str) -> Optional[Account]:
+    def account_from_name(cls, name: str) -> Account:
         for account in cls.accounts():
             if account.name == name:
                 return account
+        raise ValueError(f"No account with number {name}")
 
     @classmethod
     @lru_cache
@@ -135,15 +137,15 @@ class Wallet:
 
 def get_transfer_account(number: int) -> Optional[str]:
     acct = Wallet.account_from_number(number)
-    if acct:
-        if acct.name in IGNORE_ACCOUNTS:
-            return f"Payment t/f {acct.name}"
-        return f"Transfer t/f {acct.name}"
+    if acct.name in IGNORE_ACCOUNTS:
+        return f"Payment t/f {acct.name}"
+    return f"Transfer t/f {acct.name}"
 
 
 def map_category(note: str) -> Optional[str]:
     if note.startswith("Transfer t/f"):
         return "Transfer"
+    return None
 
 
 def clean_data(df: pl.DataFrame) -> pl.DataFrame:
